@@ -513,6 +513,9 @@ type ServiceSpecificRequest struct {
 	// Connect if true will only search for Connect-compatible services.
 	Connect bool
 
+	// Ingress if true will only search for Ingress gateways for the given service.
+	Ingress bool
+
 	EnterpriseMeta `hcl:",squash" mapstructure:",squash"`
 	QueryOptions
 }
@@ -1754,6 +1757,11 @@ type DatacenterIndexedCheckServiceNodes struct {
 
 type IndexedNodeDump struct {
 	Dump NodeDump
+	QueryMeta
+}
+
+type IndexedUpstreams struct {
+	Upstreams Upstreams
 	QueryMeta
 }
 

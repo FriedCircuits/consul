@@ -32,6 +32,8 @@ func (s *Server) clustersFromSnapshot(cfgSnap *proxycfg.ConfigSnapshot, token st
 		return s.clustersFromSnapshotConnectProxy(cfgSnap, token)
 	case structs.ServiceKindMeshGateway:
 		return s.clustersFromSnapshotMeshGateway(cfgSnap, token)
+	case structs.ServiceKindIngressGateway:
+		return s.clustersFromSnapshotIngressGateway(cfgSnap, token)
 	default:
 		return nil, fmt.Errorf("Invalid service kind: %v", cfgSnap.Kind)
 	}
@@ -63,7 +65,13 @@ func (s *Server) clustersFromSnapshotConnectProxy(cfgSnap *proxycfg.ConfigSnapsh
 
 		} else {
 			chain := cfgSnap.ConnectProxy.DiscoveryChain[id]
-			upstreamClusters, err := s.makeUpstreamClustersForDiscoveryChain(u, chain, cfgSnap)
+			chainEndpoints, ok := cfgSnap.ConnectProxy.WatchedUpstreamEndpoints[id]
+			if !ok {
+				// this should not happen
+				return nil, fmt.Errorf("no endpoint map for upstream %q", id)
+			}
+
+			upstreamClusters, err := s.makeUpstreamClustersForDiscoveryChain(u, chain, chainEndpoints, cfgSnap)
 			if err != nil {
 				return nil, err
 			}
@@ -192,6 +200,34 @@ func (s *Server) clustersFromSnapshotMeshGateway(cfgSnap *proxycfg.ConfigSnapsho
 	return clusters, nil
 }
 
+func (s *Server) clustersFromSnapshotIngressGateway(cfgSnap *proxycfg.ConfigSnapshot, token string) ([]proto.Message, error) {
+	var clusters []proto.Message
+	for _, u := range cfgSnap.IngressGateway.Upstreams {
+		id := u.Identifier()
+		chain, ok := cfgSnap.IngressGateway.DiscoveryChain[id]
+		if !ok {
+			// this should not happen
+			return nil, fmt.Errorf("no discovery chain for upstream %q", id)
+		}
+
+		chainEndpoints, ok := cfgSnap.IngressGateway.WatchedUpstreamEndpoints[id]
+		if !ok {
+			// this should not happen
+			return nil, fmt.Errorf("no endpoint map for upstream %q", id)
+		}
+
+		upstreamClusters, err := s.makeUpstreamClustersForDiscoveryChain(u, chain, chainEndpoints, cfgSnap)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, c := range upstreamClusters {
+			clusters = append(clusters, c)
+		}
+	}
+	return clusters, nil
+}
+
 func (s *Server) makeAppCluster(cfgSnap *proxycfg.ConfigSnapshot, name, pathProtocol string, port int) (*envoy.Cluster, error) {
 	var c *envoy.Cluster
 	var err error
@@ -295,6 +331,7 @@ func (s *Server) makeUpstreamClusterForPreparedQuery(upstream structs.Upstream, 
 func (s *Server) makeUpstreamClustersForDiscoveryChain(
 	upstream structs.Upstream,
 	chain *structs.CompiledDiscoveryChain,
+	chainEndpoints map[string]structs.CheckServiceNodes,
 	cfgSnap *proxycfg.ConfigSnapshot,
 ) ([]*envoy.Cluster, error) {
 	if chain == nil {
@@ -325,15 +362,7 @@ func (s *Server) makeUpstreamClustersForDiscoveryChain(
 		}
 	}
 
-	id := upstream.Identifier()
-	chainEndpointMap, ok := cfgSnap.ConnectProxy.WatchedUpstreamEndpoints[id]
-	if !ok {
-		// this should not happen
-		return nil, fmt.Errorf("no endpoint map for upstream %q", id)
-	}
-
 	var out []*envoy.Cluster
-
 	for _, node := range chain.Nodes {
 		if node.Type != structs.DiscoveryGraphNodeTypeResolver {
 			continue
@@ -352,7 +381,7 @@ func (s *Server) makeUpstreamClustersForDiscoveryChain(
 		if failoverThroughMeshGateway {
 			actualTargetID := firstHealthyTarget(
 				chain.Targets,
-				chainEndpointMap,
+				chainEndpoints,
 				targetID,
 				failover.Targets,
 			)
